@@ -400,7 +400,9 @@ void PortConnectionHandler::drivePortSegment(Segment const &seg, bool isOutput,
           builder.hookupOutputPort(*root, mapped,
                                    {DriverInfo(portNode, nullptr)});
         } else {
-          builder.addRvalue(evalCtx, *root, *path.lsp, mapped, portNode);
+          builder.addRvalue(evalCtx, *root, *path.lsp, mapped, portNode,
+                            DependencyRole::PortConnection,
+                            DependencyPrecision::Exact);
         }
       }
       break;
@@ -425,7 +427,9 @@ void PortConnectionHandler::drivePortSegment(Segment const &seg, bool isOutput,
             }
             for (auto *portNode : portNodes) {
               builder.addRvalue(evalCtx, *root, *path.lsp,
-                                DriverBitRange(path.lspBounds), portNode);
+                                DriverBitRange(path.lspBounds), portNode,
+                                DependencyRole::PortConnection,
+                                DependencyPrecision::Signal);
             }
           });
       break;
@@ -443,7 +447,9 @@ void PortConnectionHandler::drivePortSegment(Segment const &seg, bool isOutput,
       auto &constNode = builder.nodeFactory.createConstantForSegment(
           src, seg, TextLocation{});
       for (auto *portNode : portNodes) {
-        builder.addDependency(constNode, *portNode);
+        builder.addDependency(constNode, *portNode,
+                              DependencyRole::PortConnection,
+                              DependencyPrecision::Exact);
       }
       break;
     }

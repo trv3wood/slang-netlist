@@ -422,6 +422,28 @@ TEST_CASE("Absent blackBoxes field deserializes to no black boxes",
   CHECK(graph.getBlackBoxPaths().empty());
 }
 
+TEST_CASE("Version 3 edges load with conservative semantics", "[Serializer]") {
+  auto json = R"({
+    "version": 3,
+    "fileTable": [],
+    "nodes": [
+      {"id": 11, "kind": "Merge"},
+      {"id": 12, "kind": "Merge"}
+    ],
+    "edges": [
+      {"source": 11, "target": 12, "edgeKind": "None",
+       "symbol": {}, "bounds": [0, 0], "disabled": false}
+    ]
+  })";
+  NetlistGraph graph;
+  NetlistSerializer::deserialize(json, graph);
+  REQUIRE(graph.lookupById(11) != nullptr);
+  auto const &edges = graph.lookupById(11)->getOutEdges();
+  REQUIRE(edges.size() == 1);
+  CHECK(edges[0]->role == DependencyRole::Unknown);
+  CHECK(edges[0]->precision == DependencyPrecision::Unknown);
+}
+
 TEST_CASE("Malformed JSON throws error", "[Serializer]") {
   NetlistGraph graph;
   CHECK_THROWS(NetlistSerializer::deserialize("not valid json", graph));

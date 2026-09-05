@@ -2,10 +2,11 @@ cmake_minimum_required(VERSION 3.20)
 
 project(
   slang-netlist
-  VERSION 0.11.0
+  VERSION 0.12.0
   LANGUAGES CXX)
 
 include(FetchContent)
+include(GNUInstallDirs)
 
 option(BUILD_DOCS "Include documentation in the build" ON)
 option(ENABLE_EXTERNAL_TESTS "Include tests using code from external sources"

@@ -72,6 +72,8 @@ struct DataFlowAnalysis
   bool isLValue = false;
   bool isBlocking = false;
   bool prohibitLValue = false;
+  DependencyRole dependencyRole = DependencyRole::Data;
+  DependencyPrecision dependencyPrecision = DependencyPrecision::Range;
 
   // A reference to the netlist graph under construction.
   NetlistBuilder &builder;

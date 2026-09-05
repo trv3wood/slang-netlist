@@ -28,6 +28,9 @@ enum class NodeKind {
   Constant,
 };
 
+/// 返回节点类型的稳定机器协议名称。
+[[nodiscard]] auto toString(NodeKind kind) -> std::string_view;
+
 /// Represent a node in the netlist, corresponding to a variable or an
 /// operation.
 class NetlistNode : public Node<NetlistNode, NetlistEdge> {

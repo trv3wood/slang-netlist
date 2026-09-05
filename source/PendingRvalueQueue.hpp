@@ -41,7 +41,9 @@ public:
   /// signals.
   void enqueue(ast::ValueSymbol const &symbol, ast::Expression const &lsp,
                DriverBitRange bounds, NetlistNode *node,
-               ast::EdgeKind edgeKind = ast::EdgeKind::None);
+               ast::EdgeKind edgeKind = ast::EdgeKind::None,
+               DependencyRole role = DependencyRole::Data,
+               DependencyPrecision precision = DependencyPrecision::Range);
 
   /// Set or clear the current thread's per-task buffer. Pass nullptr
   /// to revert to the shared-queue path.

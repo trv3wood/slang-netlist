@@ -64,6 +64,14 @@ module m(input logic [3:0] a, input logic [3:0] b, output logic [3:0] y);
 endmodule
 """
 
+EDGE_ONLY_SIGNAL_SV = """\
+module m(input logic a, output logic y);
+  logic internal_value;
+  assign internal_value = a;
+  assign y = internal_value;
+endmodule
+"""
+
 # Two instances of the same submodule (cpu and cpu2) so scope-boundary tests
 # can distinguish top.cpu from top.cpu2.
 FILTER_SV = """\
@@ -121,12 +129,16 @@ class DriverTests(unittest.TestCase):
 
     @staticmethod
     def _parse_stats(stdout):
-        """Extract and parse the JSON stats line from stdout."""
-        for line in stdout.splitlines():
-            line = line.strip()
-            if line.startswith("{") and "time_seconds" in line:
-                return json.loads(line)
-        return None
+        """从机器协议 envelope 中读取统计信息。"""
+        try:
+            return json.loads(stdout).get("stats")
+        except json.JSONDecodeError:
+            return None
+
+    @staticmethod
+    def _items(stdout):
+        """读取机器协议中的结果列表。"""
+        return json.loads(stdout)["data"]["items"]
 
     def test_help(self):
         self.assertIn("USAGE:", self.run_tool("--help").stdout)
@@ -136,7 +148,18 @@ class DriverTests(unittest.TestCase):
 
     def test_rca_path(self):
         r = self.run_tool(
-            "rca.sv", "--from", "rca.i_op0", "--to", "rca.o_sum", "--no-colours"
+            "rca.sv",
+            "--from",
+            "rca.i_op0",
+            "--to",
+            "rca.o_sum",
+            "--from-kind",
+            "port",
+            "--to-kind",
+            "port",
+            "--cross-state",
+            "unlimited",
+            "--no-colours",
         )
         # The exact path found depends on node ordering, which is
         # non-deterministic with parallel DFA execution. Verify that a valid
@@ -203,7 +226,7 @@ comb-loop.sv:10:10: note: assignment
             self.run_tool("rca.sv", "--save-netlist", netlist)
             with open(netlist) as f:
                 data = json.load(f)
-        self.assertEqual(data["version"], 3)
+        self.assertEqual(data["version"], 4)
         self.assertIn("fileTable", data)
         self.assertIn("nodes", data)
         self.assertIn("edges", data)
@@ -214,7 +237,18 @@ comb-loop.sv:10:10: note: assignment
         with self.temp_path(".json") as netlist:
             self.run_tool("rca.sv", "--save-netlist", netlist)
             r = self.run_tool(
-                "--load-netlist", netlist, "--from", "rca.i_op0", "--to", "rca.o_sum"
+                "--load-netlist",
+                netlist,
+                "--from",
+                "rca.i_op0",
+                "--to",
+                "rca.o_sum",
+                "--from-kind",
+                "port",
+                "--to-kind",
+                "port",
+                "--cross-state",
+                "unlimited",
             )
         self.assertIn("input port i_op0", r.stdout)
         self.assertIn("output port o_sum", r.stdout)
@@ -373,20 +407,24 @@ comb-loop.sv:10:10: note: assignment
 
     def test_find_format_json(self):
         r = self.run_tool("rca.sv", "--find", "rca.o_sum", "--format", "json")
-        data = json.loads(r.stdout)
+        envelope = json.loads(r.stdout)
+        self.assertEqual(envelope["schema_version"], 1)
+        self.assertEqual(envelope["tool"]["graph_schema_version"], 4)
+        self.assertTrue(envelope["artifact_id"])
+        data = self._items(r.stdout)
         self.assertTrue(any(entry["name"] == "rca.o_sum" for entry in data))
         self.assertIn("location", data[0])
 
     def test_report_registers_format_json(self):
         r = self.run_tool("rca.sv", "--report-registers", "--format", "json")
-        data = json.loads(r.stdout)
+        data = self._items(r.stdout)
         self.assertEqual({entry["name"] for entry in data}, {"rca.sum_q", "rca.co_q"})
 
     def test_sensitivity_format_json(self):
         r = self.run_tool(
             "--sensitivity", "m.q", "--format", "json", source=SENS_SIMPLE_SV
         )
-        data = json.loads(r.stdout)
+        data = self._items(r.stdout)
         self.assertEqual(len(data), 1)
         self.assertEqual(data[0]["name"], "m.clk")
         self.assertEqual(data[0]["edge"], "PosEdge")
@@ -395,7 +433,7 @@ comb-loop.sv:10:10: note: assignment
         r = self.run_tool(
             "--constant-drivers", "m.y", "--format", "json", source=CONST_SIMPLE_SV
         )
-        data = json.loads(r.stdout)
+        data = self._items(r.stdout)
         self.assertEqual(len(data), 1)
         self.assertEqual(data[0]["value"], "4'b1010")
 
@@ -405,7 +443,7 @@ comb-loop.sv:10:10: note: assignment
                 "rca.sv", "--report-registers", "--format", "json", "-o", outfile
             )
             with open(outfile) as f:
-                data = json.load(f)
+                data = json.load(f)["data"]["items"]
         self.assertEqual({entry["name"] for entry in data}, {"rca.sum_q", "rca.co_q"})
 
     def test_format_invalid(self):
@@ -430,12 +468,69 @@ comb-loop.sv:10:10: note: assignment
 
     def test_drivers_format_json(self):
         r = self.run_tool("--drivers", "m.y", "--format", "json", source=DRIVERS_SV)
-        data = json.loads(r.stdout)
+        data = self._items(r.stdout)
         self.assertEqual({entry["bits"] for entry in data}, {"[1:0]", "[3:2]"})
-        self.assertTrue(all(entry["driver"] == "assignment" for entry in data))
+        self.assertTrue(all(entry["driver"]["kind"] == "assignment" for entry in data))
 
     def test_drivers_nonexistent(self):
         self.assert_fails("rca.sv", "--drivers", "rca.nonexistent")
+
+    def test_edge_only_signal_is_queryable(self):
+        r = self.run_tool(
+            "--drivers",
+            "m.internal_value",
+            "--format",
+            "json",
+            source=EDGE_ONLY_SIGNAL_SV,
+        )
+        self.assertTrue(self._items(r.stdout))
+        r = self.run_tool(
+            "--fan-in",
+            "m.internal_value",
+            "--format",
+            "json",
+            source=EDGE_ONLY_SIGNAL_SV,
+        )
+        self.assertTrue(self._items(r.stdout))
+
+    def test_json_error_is_single_envelope(self):
+        r = self.run_tool(
+            "rca.sv",
+            "--drivers",
+            "rca.nonexistent",
+            "--format",
+            "json",
+            check=False,
+        )
+        self.assertEqual(r.returncode, 6)
+        envelope = json.loads(r.stdout)
+        self.assertEqual(envelope["summary"]["status"], "error")
+        self.assertEqual(envelope["diagnostics"][0]["code"], "invalid_query")
+
+    def test_json_result_limit_reports_truncation(self):
+        r = self.run_tool(
+            "rca.sv",
+            "--find",
+            "rca.**",
+            "--format",
+            "json",
+            "--max-results",
+            "1",
+            check=False,
+        )
+        self.assertEqual(r.returncode, 4)
+        envelope = json.loads(r.stdout)
+        self.assertFalse(envelope["summary"]["complete"])
+        self.assertEqual(envelope["summary"]["returned"], 1)
+
+    def test_comb_loops_format_json(self):
+        r = self.run_tool("comb-loop.sv", "--comb-loops", "--format", "json")
+        envelope = json.loads(r.stdout)
+        self.assertEqual(envelope["command"], "comb-loops")
+        self.assertTrue(envelope["data"]["loops"])
+        edge = envelope["data"]["loops"][0]["edges"][0]
+        self.assertIn("role", edge)
+        self.assertIn("precision", edge)
 
     def test_netlist_dot_full(self):
         # Without a scope selector the whole graph is rendered.

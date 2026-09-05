@@ -5,6 +5,7 @@
 
 #include "slang/ast/Expression.h"
 #include "slang/ast/ValuePath.h"
+#include "slang/ast/expressions/SelectExpressions.h"
 #include "slang/ast/symbols/ValueSymbol.h"
 #include "slang/ast/symbols/VariableSymbols.h"
 
@@ -53,7 +54,8 @@ void DataFlowAnalysis::handleRvalue(ast::ValueSymbol const &symbol,
     DEBUG_PRINT("No definitions for symbol {}, adding to pending list.\n",
                 symbol.name);
     auto *node = currState.node != nullptr ? currState.node : externalNode;
-    builder.addRvalue(getEvalContext(), symbol, lsp, bounds, node);
+    builder.addRvalue(getEvalContext(), symbol, lsp, bounds, node,
+                      dependencyRole, dependencyPrecision);
     return;
   }
 
@@ -63,7 +65,8 @@ void DataFlowAnalysis::handleRvalue(ast::ValueSymbol const &symbol,
   // constant conditions), we cannot add edges directly. Fall back to the
   // pending R-value list, which will be resolved after all drivers are visited.
   if (currState.node == nullptr) {
-    builder.addRvalue(getEvalContext(), symbol, lsp, bounds, externalNode);
+    builder.addRvalue(getEvalContext(), symbol, lsp, bounds, externalNode,
+                      dependencyRole, dependencyPrecision);
     return;
   }
 
@@ -87,7 +90,8 @@ void DataFlowAnalysis::handleRvalue(ast::ValueSymbol const &symbol,
       // Add an edge from the definition node to the current node
       // using it.
       SLANG_ASSERT(currState.node != nullptr);
-      builder.addDriversToNode(driverList, *currState.node, symbolRef, bounds);
+      builder.addDriversToNode(driverList, *currState.node, symbolRef, bounds,
+                               dependencyRole, dependencyPrecision);
 
       // All done, exit early.
       return;
@@ -101,7 +105,8 @@ void DataFlowAnalysis::handleRvalue(ast::ValueSymbol const &symbol,
 
       // Add an edge from the definition node to the current node
       // using it.
-      builder.addDriversToNode(driverList, *currState.node, symbolRef, bounds);
+      builder.addDriversToNode(driverList, *currState.node, symbolRef, bounds,
+                               dependencyRole, dependencyPrecision);
 
       // Examine the next definition in the next iteration.
     }
@@ -124,7 +129,8 @@ void DataFlowAnalysis::handleRvalue(ast::ValueSymbol const &symbol,
     auto itBounds = it.bounds();
     auto *node = currState.node != nullptr ? currState.node : externalNode;
     builder.addRvalue(getEvalContext(), symbol, lsp,
-                      {itBounds.first, itBounds.second}, node);
+                      {itBounds.first, itBounds.second}, node, dependencyRole,
+                      dependencyPrecision);
   }
 }
 
@@ -198,7 +204,8 @@ void DataFlowAnalysis::updateNode(NetlistNode *node, bool conditional) {
 
   // If there is a previous conditional node, then add an edge
   if (currState.condition != nullptr) {
-    builder.addDependency(*currState.condition, *node);
+    builder.addDependency(*currState.condition, *node, DependencyRole::Control,
+                          DependencyPrecision::Signal);
   }
 
   // If the new node is a conditional, then
@@ -493,7 +500,45 @@ void DataFlowAnalysis::driveRhsLspSegment(const BitSliceSource &src,
   // `width - 1` because `DriverBitRange` is inclusive on both ends.
   auto hi = static_cast<int32_t>(path.lspBounds.first + offset + width - 1);
   DriverBitRange bounds{lo, hi};
+
+  // 动态选择器会改变实际读取的数据，必须作为独立调试依赖保留。
+  bool dynamicSelection = false;
+  for (auto const &element : path) {
+    auto visitSelector = [&](ast::Expression const &selector,
+                             DependencyRole role) {
+      auto value = selector.eval(getEvalContext());
+      if (value) {
+        return;
+      }
+      dynamicSelection = true;
+      auto savedRole = dependencyRole;
+      auto savedPrecision = dependencyPrecision;
+      dependencyRole = role;
+      dependencyPrecision = DependencyPrecision::Exact;
+      visit(selector);
+      dependencyRole = savedRole;
+      dependencyPrecision = savedPrecision;
+    };
+
+    if (element.kind == ast::ExpressionKind::ElementSelect) {
+      auto const &select = element.as<ast::ElementSelectExpression>();
+      auto role = select.value().type->isUnpackedArray()
+                      ? DependencyRole::Address
+                      : DependencyRole::Index;
+      visitSelector(select.selector(), role);
+    } else if (element.kind == ast::ExpressionKind::RangeSelect) {
+      auto const &select = element.as<ast::RangeSelectExpression>();
+      visitSelector(select.left(), DependencyRole::Index);
+      visitSelector(select.right(), DependencyRole::Index);
+    }
+  }
+
+  auto savedPrecision = dependencyPrecision;
+  if (dynamicSelection) {
+    dependencyPrecision = DependencyPrecision::Signal;
+  }
   handleRvalue(symbol, *lsp, bounds);
+  dependencyPrecision = savedPrecision;
 }
 
 } // namespace slang::netlist

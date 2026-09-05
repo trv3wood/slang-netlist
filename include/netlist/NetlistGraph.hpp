@@ -56,11 +56,18 @@ public:
              analysis::AnalysisManager &analysisManager,
              BuilderOptions options = {});
 
-  /// Lookup a node in the graph by its hierarchical name.
+  /// 按层次名称返回图中的首个节点。
   ///
   /// @param name The hierarchical name of the node.
-  /// @return A pointer to the node if found, or nullptr if not found.
+  /// 新代码应优先使用 lookupAll，以便显式处理同名节点。
   [[nodiscard]] auto lookup(std::string_view name) const -> NetlistNode *;
+
+  /// 返回具有指定层次路径的全部节点。
+  [[nodiscard]] auto lookupAll(std::string_view name) const
+      -> std::vector<NetlistNode *>;
+
+  /// 按当前图工件中的节点 ID 查找节点。
+  [[nodiscard]] auto lookupById(size_t id) const -> NetlistNode *;
 
   /// Lookup nodes by hierarchical name and bit range.
   ///
@@ -104,6 +111,21 @@ public:
   /// driver nodes by bit-aligned resolution.
   [[nodiscard]] auto getBitDrivers(std::string_view name) const
       -> std::vector<BitDriver>;
+
+  /// 判断图中是否存在携带指定信号路径的边。
+  [[nodiscard]] auto hasSignal(std::string_view name) const -> bool;
+
+  /// 从信号的所有驱动节点开始收集组合扇入。
+  [[nodiscard]] auto getSignalCombFanIn(std::string_view name,
+                                        DriverBitRange bounds,
+                                        size_t maxDepth = 0) const
+      -> std::vector<NetlistNode *>;
+
+  /// 从信号的所有使用节点开始收集组合扇出。
+  [[nodiscard]] auto getSignalCombFanOut(std::string_view name,
+                                         DriverBitRange bounds,
+                                         size_t maxDepth = 0) const
+      -> std::vector<NetlistNode *>;
 
   /// Return all nodes reachable from @p node via combinational edges in the
   /// forward (fan-out) direction.  The traversal stops at State nodes.
@@ -191,6 +213,12 @@ public:
     return blackBoxPaths;
   }
 
+  /// 返回本次图工件的进程无关标识；序列化后保持不变。
+  [[nodiscard]] auto getArtifactId() const -> std::string const &;
+
+  /// 恢复序列化工件中的标识。
+  void setArtifactId(std::string id) { artifactId = std::move(id); }
+
   /// Classify a node against the recorded black-box instance paths.
   ///
   /// A Port node directly below a black-boxed instance is on the boundary;
@@ -205,6 +233,7 @@ private:
   std::vector<std::string> blackBoxPaths;
   mutable bool indexBuilt = false;
   mutable std::unordered_map<std::string, std::vector<NetlistNode *>> nodeIndex;
+  mutable std::string artifactId;
   void buildIndex() const;
 };
 

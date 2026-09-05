@@ -8,6 +8,11 @@ import unittest
 from utilities import fuzzy_compare_strings
 
 
+def machine_items(text):
+    """读取机器协议 envelope 中的结果列表。"""
+    return json.loads(text)["data"]["items"]
+
+
 class ReportTests(unittest.TestCase):
     executable = ...
 
@@ -230,7 +235,7 @@ rca.genblk1[6].i                         rca.sv:18:15
             text=True,
         )
         self.assertEqual(result.returncode, 0)
-        data = json.loads(result.stdout)
+        data = machine_items(result.stdout)
         self.assertEqual(len(data), 6)
         first = data[0]
         self.assertEqual(first["name"], "rca.i_clk")
@@ -251,7 +256,7 @@ rca.genblk1[6].i                         rca.sv:18:15
             text=True,
         )
         self.assertEqual(result.returncode, 0)
-        data = json.loads(result.stdout)
+        data = machine_items(result.stdout)
         by_name = {v["name"]: v for v in data}
 
         carry = by_name["rca.carry"]
@@ -276,7 +281,7 @@ rca.genblk1[6].i                         rca.sv:18:15
             text=True,
         )
         self.assertEqual(result.returncode, 0)
-        data = json.loads(result.stdout)
+        data = machine_items(result.stdout)
         by_value = {v["value"]: v for v in data}
 
         carry = by_value["rca.carry"]
@@ -319,7 +324,7 @@ rca.genblk1[6].i                         rca.sv:18:15
             text=True,
         )
         self.assertEqual(result.returncode, 0)
-        data = json.loads(result.stdout)
+        data = machine_items(result.stdout)
         names = [v["name"] for v in data]
         self.assertEqual(names, ["rca.sum_q", "rca.co_q"])
 
@@ -338,7 +343,7 @@ rca.genblk1[6].i                         rca.sv:18:15
             text=True,
         )
         self.assertEqual(result.returncode, 0)
-        data = json.loads(result.stdout)
+        data = machine_items(result.stdout)
         self.assertEqual(len(data), 1)
         self.assertEqual(data[0]["value"], "rca.sum_q")
         self.assertEqual(len(data[0]["drivers"]), 1)
@@ -359,7 +364,7 @@ rca.genblk1[6].i                         rca.sv:18:15
             text=True,
         )
         self.assertEqual(result.returncode, 0)
-        data = json.loads(result.stdout)
+        data = machine_items(result.stdout)
         self.assertEqual(len(data), 6)
 
     def test_scope_not_found(self):
@@ -386,7 +391,7 @@ rca.genblk1[6].i                         rca.sv:18:15
             text=True,
         )
         self.assertEqual(result.returncode, 0)
-        names = [v["name"] for v in json.loads(result.stdout)]
+        names = [v["name"] for v in machine_items(result.stdout)]
         self.assertEqual(names, ["rca.sum_q"])
 
     def test_scope_glob_recursive(self):
@@ -404,7 +409,7 @@ rca.genblk1[6].i                         rca.sv:18:15
             text=True,
         )
         self.assertEqual(result.returncode, 0)
-        values = [v["value"] for v in json.loads(result.stdout)]
+        values = [v["value"] for v in machine_items(result.stdout)]
         self.assertEqual(len(values), 7)
         for v in values:
             self.assertTrue(v.startswith("rca.genblk1["))
@@ -425,7 +430,7 @@ rca.genblk1[6].i                         rca.sv:18:15
             text=True,
         )
         self.assertEqual(result.returncode, 0)
-        values = [v["value"] for v in json.loads(result.stdout)]
+        values = [v["value"] for v in machine_items(result.stdout)]
         self.assertEqual(len(values), 7)
 
     def test_scope_glob_dedupe(self):
@@ -445,7 +450,7 @@ rca.genblk1[6].i                         rca.sv:18:15
             text=True,
         )
         self.assertEqual(result.returncode, 0)
-        names = [v["name"] for v in json.loads(result.stdout)]
+        names = [v["name"] for v in machine_items(result.stdout)]
         self.assertEqual(names, ["rca.sum_q", "rca.co_q"])
 
     def test_scope_glob_no_match(self):
@@ -472,7 +477,7 @@ rca.genblk1[6].i                         rca.sv:18:15
             text=True,
         )
         self.assertEqual(result.returncode, 0)
-        names = [p["name"] for p in json.loads(result.stdout)]
+        names = [p["name"] for p in machine_items(result.stdout)]
         self.assertEqual(names, ["rca.i_clk", "rca.i_rst", "rca.i_op0", "rca.i_op1"])
 
     def test_name_filter_variables(self):
@@ -490,7 +495,7 @@ rca.genblk1[6].i                         rca.sv:18:15
             text=True,
         )
         self.assertEqual(result.returncode, 0)
-        names = [v["name"] for v in json.loads(result.stdout)]
+        names = [v["name"] for v in machine_items(result.stdout)]
         self.assertEqual(sorted(names), ["rca.co_q", "rca.sum_q"])
 
     def test_name_filter_drivers(self):
@@ -508,7 +513,7 @@ rca.genblk1[6].i                         rca.sv:18:15
             text=True,
         )
         self.assertEqual(result.returncode, 0)
-        data = json.loads(result.stdout)
+        data = machine_items(result.stdout)
         self.assertEqual(len(data), 1)
         self.assertEqual(data[0]["value"], "rca.carry")
         self.assertEqual(len(data[0]["drivers"]), 8)
@@ -528,7 +533,7 @@ rca.genblk1[6].i                         rca.sv:18:15
             text=True,
         )
         self.assertEqual(result.returncode, 0)
-        names = [v["name"] for v in json.loads(result.stdout)]
+        names = [v["name"] for v in machine_items(result.stdout)]
         # rca... should match every variable under rca.
         self.assertIn("rca.carry", names)
         self.assertIn("rca.sum_q", names)
@@ -551,7 +556,7 @@ rca.genblk1[6].i                         rca.sv:18:15
             text=True,
         )
         self.assertEqual(result.returncode, 0)
-        names = [v["name"] for v in json.loads(result.stdout)]
+        names = [v["name"] for v in machine_items(result.stdout)]
         # sum_q matches both patterns but should appear once.
         self.assertEqual(sorted(names), ["rca.co_q", "rca.sum_q"])
 
@@ -572,7 +577,7 @@ rca.genblk1[6].i                         rca.sv:18:15
             text=True,
         )
         self.assertEqual(result.returncode, 0)
-        names = [p["name"] for p in json.loads(result.stdout)]
+        names = [p["name"] for p in machine_items(result.stdout)]
         self.assertEqual(sorted(names), ["rca.o_co", "rca.o_sum"])
 
     def test_name_filter_no_match_empty(self):
@@ -589,8 +594,8 @@ rca.genblk1[6].i                         rca.sv:18:15
             capture_output=True,
             text=True,
         )
-        self.assertEqual(result.returncode, 0)
-        self.assertEqual(json.loads(result.stdout), [])
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(machine_items(result.stdout), [])
 
     def test_output_to_file_table(self):
         with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
@@ -630,7 +635,7 @@ rca.genblk1[6].i                         rca.sv:18:15
             self.assertEqual(result.returncode, 0)
             self.assertEqual(result.stdout, "")
             with open(outfile) as f:
-                data = json.load(f)
+                data = json.load(f)["data"]["items"]
             names = [v["name"] for v in data]
             self.assertIn("rca.carry", names)
         finally:
@@ -657,7 +662,7 @@ rca.genblk1[6].i                         rca.sv:18:15
             )
             self.assertEqual(result.returncode, 0)
             with open(outfile) as f:
-                data = json.load(f)
+                data = json.load(f)["data"]["items"]
             self.assertEqual(len(data), 1)
             self.assertEqual(data[0]["value"], "rca.carry")
         finally:
@@ -678,7 +683,7 @@ rca.genblk1[6].i                         rca.sv:18:15
             text=True,
         )
         self.assertEqual(result.returncode, 0)
-        data = json.loads(result.stdout)
+        data = machine_items(result.stdout)
         self.assertEqual(len(data), 6)
 
 

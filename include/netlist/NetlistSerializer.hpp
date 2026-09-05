@@ -9,10 +9,11 @@ namespace slang::netlist {
 
 /// Serialise and deserialise a NetlistGraph to/from JSON.
 ///
-/// Format (version 3):
+/// 格式（版本 4；读取时仍兼容版本 3）：
 /// @code{.json}
 /// {
-///   "version": 3,
+///   "version": 4,
+///   "artifactId": "...",
 ///   "fileTable": ["test.sv", "other.sv"],
 ///   "blackBoxes": ["m.u_core"],
 ///   "nodes": [
@@ -24,12 +25,13 @@ namespace slang::netlist {
 ///     {"source": 1, "target": 3, "edgeKind": "None",
 ///      "symbol": {"name": "a", "path": "m.a",
 ///                 "location": {"fileIndex": 0, "line": 2, "column": 31}},
-///      "bounds": [0, 0], "disabled": false}
+///      "bounds": [0, 0], "role": "data", "precision": "exact",
+///      "disabled": false}
 ///   ]
 /// }
 /// @endcode
 struct NetlistSerializer {
-  static constexpr int formatVersion = 3;
+  static constexpr int formatVersion = 4;
 
   /// Serialise @p graph to a pretty-printed JSON string.
   static auto serialize(NetlistGraph const &graph) -> std::string;

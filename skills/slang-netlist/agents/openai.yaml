@@ -1,0 +1,4 @@
+interface:
+  display_name: Slang Netlist
+  short_description: 查询 RTL 静态依赖与时序边界
+  default_prompt: 使用 slang-netlist 分析给定 RTL 信号的静态驱动和有界扇入。

@@ -94,6 +94,37 @@ static auto edgeKindFromString(std::string_view str) -> ast::EdgeKind {
   return ast::EdgeKind::None;
 }
 
+static auto dependencyRoleFromString(std::string_view str) -> DependencyRole {
+  if (str == "data")
+    return DependencyRole::Data;
+  if (str == "control")
+    return DependencyRole::Control;
+  if (str == "index")
+    return DependencyRole::Index;
+  if (str == "address")
+    return DependencyRole::Address;
+  if (str == "event")
+    return DependencyRole::Event;
+  if (str == "clock")
+    return DependencyRole::Clock;
+  if (str == "reset")
+    return DependencyRole::Reset;
+  if (str == "port_connection")
+    return DependencyRole::PortConnection;
+  return DependencyRole::Unknown;
+}
+
+static auto dependencyPrecisionFromString(std::string_view str)
+    -> DependencyPrecision {
+  if (str == "exact")
+    return DependencyPrecision::Exact;
+  if (str == "range")
+    return DependencyPrecision::Range;
+  if (str == "signal")
+    return DependencyPrecision::Signal;
+  return DependencyPrecision::Unknown;
+}
+
 static auto directionToString(ast::ArgumentDirection dir) -> std::string_view {
   switch (dir) {
   case ast::ArgumentDirection::In:
@@ -156,6 +187,7 @@ static auto symbolFromJson(json const &j) -> SymbolReference {
 auto NetlistSerializer::serialize(NetlistGraph const &graph) -> std::string {
   json root;
   root["version"] = formatVersion;
+  root["artifactId"] = graph.getArtifactId();
 
   // Serialize file table.
   json fileTableJson = json::array();
@@ -246,6 +278,8 @@ auto NetlistSerializer::serialize(NetlistGraph const &graph) -> std::string {
       edgeJson["source"] = edge.getSourceNode().ID;
       edgeJson["target"] = edge.getTargetNode().ID;
       edgeJson["edgeKind"] = edgeKindToString(edge.edgeKind);
+      edgeJson["role"] = toString(edge.role);
+      edgeJson["precision"] = toString(edge.precision);
       edgeJson["symbol"] =
           edge.symbol != nullptr ? symbolToJson(*edge.symbol) : json::object();
       edgeJson["bounds"] = {edge.bounds.lower(), edge.bounds.upper()};
@@ -267,9 +301,13 @@ void NetlistSerializer::deserialize(std::string_view jsonStr,
   auto root = json::parse(jsonStr);
 
   auto version = root.at("version").get<int>();
-  if (version != formatVersion) {
+  if (version != 3 && version != formatVersion) {
     throw std::runtime_error("unsupported netlist format version: " +
                              std::to_string(version));
+  }
+
+  if (version >= 4 && root.contains("artifactId")) {
+    graph.setArtifactId(root.at("artifactId").get<std::string>());
   }
 
   // Deserialize file table.
@@ -372,6 +410,7 @@ void NetlistSerializer::deserialize(std::string_view jsonStr,
     }
 
     auto &addedNode = graph.addNode(std::move(node));
+    addedNode.ID = id;
     idMap[id] = &addedNode;
   }
 
@@ -389,6 +428,14 @@ void NetlistSerializer::deserialize(std::string_view jsonStr,
     auto &edge = graph.addEdge(*sourceIt->second, *targetIt->second);
     edge.edgeKind =
         edgeKindFromString(edgeJson.at("edgeKind").get<std::string>());
+    if (version >= 4) {
+      edge.role = dependencyRoleFromString(edgeJson.value("role", "unknown"));
+      edge.precision =
+          dependencyPrecisionFromString(edgeJson.value("precision", "unknown"));
+    } else {
+      edge.role = DependencyRole::Unknown;
+      edge.precision = DependencyPrecision::Unknown;
+    }
     auto const &symJson = edgeJson.at("symbol");
     if (symJson.contains("name")) {
       auto sym = symbolFromJson(symJson);

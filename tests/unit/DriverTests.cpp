@@ -1,5 +1,36 @@
 #include "Test.hpp"
 
+TEST_CASE("Dynamic selector records index dependency", "[Drivers]") {
+  auto const &tree = R"(
+module m(input logic [3:0] a, input logic [1:0] sel, output logic y);
+  assign y = a[sel];
+endmodule
+)";
+  NetlistTest test(tree);
+
+  bool foundIndex = false;
+  bool foundSignalData = false;
+  for (auto const &node : test.graph) {
+    for (auto const &edge : node->getOutEdges()) {
+      if (edge->symbol == nullptr) {
+        continue;
+      }
+      if (edge->symbol->hierarchicalPath == "m.sel" &&
+          edge->role == DependencyRole::Index &&
+          edge->precision == DependencyPrecision::Exact) {
+        foundIndex = true;
+      }
+      if (edge->symbol->hierarchicalPath == "m.a" &&
+          edge->role == DependencyRole::Data &&
+          edge->precision == DependencyPrecision::Signal) {
+        foundSignalData = true;
+      }
+    }
+  }
+  CHECK(foundIndex);
+  CHECK(foundSignalData);
+}
+
 TEST_CASE("Driver range that contains an existing one", "[Drivers]") {
   auto const &tree = (R"(
 module m(input logic [3:0] a, output logic [3:0] b);

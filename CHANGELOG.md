@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
 
+## [v0.12.0]
+
+Agent and machine-interface features:
+* Replace JSON table arrays with a versioned, single-document query envelope.
+* Add bounded machine results, structured path and combinational-loop output,
+  artifact IDs, and explicit sequential path traversal policy.
+* Allow driver and cone queries for signals that exist only as edge symbols.
+* Record dependency role and precision, including dynamic index/address edges.
+* Bump saved netlists to schema version 4 while retaining version 3 loading.
+* Ship a version-bound Codex skill and a portable Linux release workflow.
+
 ## [v0.11.0]
 
 Library features:

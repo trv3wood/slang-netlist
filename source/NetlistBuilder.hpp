@@ -179,18 +179,27 @@ private:
   }
 
   /// Add a dependency between two nodes in the netlist.
-  void addDependency(NetlistNode &source, NetlistNode &target);
+  void
+  addDependency(NetlistNode &source, NetlistNode &target,
+                DependencyRole role = DependencyRole::Data,
+                DependencyPrecision precision = DependencyPrecision::Exact);
 
   /// Add a dependency between two nodes in the netlist.
   /// Specify the symbol and bounds that are being driven to annotate the edge.
-  void addDependency(NetlistNode &source, NetlistNode &target,
-                     SymbolReference const *symbol, DriverBitRange bounds,
-                     ast::EdgeKind edgeKind = ast::EdgeKind::None);
+  void
+  addDependency(NetlistNode &source, NetlistNode &target,
+                SymbolReference const *symbol, DriverBitRange bounds,
+                ast::EdgeKind edgeKind = ast::EdgeKind::None,
+                DependencyRole role = DependencyRole::Data,
+                DependencyPrecision precision = DependencyPrecision::Range);
 
   /// Add a list of drivers to the target node. Annotate the edges with the
   /// driven symbol and its bounds.
-  void addDriversToNode(DriverList const &drivers, NetlistNode &node,
-                        SymbolReference const *symbol, DriverBitRange bounds);
+  void
+  addDriversToNode(DriverList const &drivers, NetlistNode &node,
+                   SymbolReference const *symbol, DriverBitRange bounds,
+                   DependencyRole role = DependencyRole::Data,
+                   DependencyPrecision precision = DependencyPrecision::Range);
 
   /// Merge two nodes by creating a new merge node, creating dependencies from
   /// them to the merge and return a reference to the merge node.
@@ -221,7 +230,8 @@ private:
   /// else is enqueued onto `pendingQueue` for Phase 4 resolution.
   void addRvalue(ast::EvalContext &evalCtx, ast::ValueSymbol const &symbol,
                  ast::Expression const &lsp, DriverBitRange bounds,
-                 NetlistNode *node);
+                 NetlistNode *node, DependencyRole role = DependencyRole::Data,
+                 DependencyPrecision precision = DependencyPrecision::Range);
 
   /// If the specified symbol has an output port back reference, then connect
   /// the drivers to the port node. This is called when merging driver into

@@ -19,6 +19,7 @@
 #include "slang/util/VersionInfo.h"
 
 #include "fmt/format.h"
+#include <nlohmann/json.hpp>
 
 #include <unordered_set>
 
@@ -149,7 +150,8 @@ auto main(int argc, char **argv) -> int {
   }
 
   if (showVersion == true) {
-    printf("slang-report version %d.%d.%d+%s\n", VersionInfo::getMajor(),
+    printf("slang-report version %s (slang %d.%d.%d+%s)\n",
+           SLANG_NETLIST_VERSION, VersionInfo::getMajor(),
            VersionInfo::getMinor(), VersionInfo::getPatch(),
            std::string(VersionInfo::getHash()).c_str());
     return 0;
@@ -236,7 +238,7 @@ auto main(int argc, char **argv) -> int {
       }
     };
 
-    auto emit = [&](auto &visitor) {
+    auto emit = [&](auto &visitor) -> int {
       visitor.setNameFilters(nameFilters);
       if (scopeSymbols.empty()) {
         compilation->getRoot().visit(visitor);
@@ -249,18 +251,40 @@ auto main(int argc, char **argv) -> int {
         JsonWriter writer;
         writer.setPrettyPrint(true);
         visitor.report(writer);
-        writeOutput(fmt::format("{}\n", writer.view()));
+        auto items = nlohmann::json::parse(writer.view());
+        auto command =
+            reportPorts ? "ports" : (reportVariables ? "variables" : "drivers");
+        nlohmann::json envelope = {
+            {"schema_version", 1},
+            {"tool",
+             {{"name", "slang-report"},
+              {"version", SLANG_NETLIST_VERSION},
+              {"slang_version",
+               fmt::format("{}.{}.{}+{}", VersionInfo::getMajor(),
+                           VersionInfo::getMinor(), VersionInfo::getPatch(),
+                           VersionInfo::getHash())}}},
+            {"command", command},
+            {"query", {{"scopes", scopes}, {"names", nameFilters}}},
+            {"data", {{"items", items}}},
+            {"diagnostics", nlohmann::json::array()},
+            {"summary",
+             {{"status", items.empty() ? "empty" : "ok"},
+              {"complete", true},
+              {"returned", items.size()},
+              {"total", items.size()}}}};
+        writeOutput(envelope.dump(2) + "\n");
+        return items.empty() ? 3 : 0;
       } else {
         netlist::FormatBuffer buf;
         visitor.report(buf);
         writeOutput(buf.str());
+        return 0;
       }
     };
 
     if (reportPorts) {
       ReportPorts visitor(*compilation);
-      emit(visitor);
-      return 0;
+      return emit(visitor);
     }
 
     // Both --variables and --drivers need driver counts from analysis.
@@ -271,12 +295,11 @@ auto main(int argc, char **argv) -> int {
       }
       if (reportVariables) {
         ReportVariables visitor(*compilation, *analysisManager);
-        emit(visitor);
+        return emit(visitor);
       } else {
         ReportDrivers visitor(*compilation, *analysisManager);
-        emit(visitor);
+        return emit(visitor);
       }
-      return 0;
     }
 
     SLANG_THROW(std::runtime_error(

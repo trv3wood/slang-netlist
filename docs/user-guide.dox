@@ -233,8 +233,10 @@ exactly one of the following actions:
 @par Output format
 Use @c --format @c table (the default) or @c --format @c json on the
 three tabular actions to choose human-readable columns or
-machine-readable JSON. @c --ast-json is always JSON. The JSON drivers
-report nests the per-value drivers under each value entry.
+machine-readable JSON. Query JSON uses schema version 1 and is wrapped in a
+single envelope containing tool, query, data, diagnostics, and summary fields.
+@c --ast-json remains a raw AST document. The JSON drivers report nests the
+per-value drivers under each value entry inside @c data.items.
 
 @par Output destination
 By default the tabular actions print to stdout; pass @c -o /
@@ -425,7 +427,18 @@ slang-netlist design.sv --report-registers --stats
 
 The output shows per-phase timings (collect, parallel DFA, drain, resolve
 R-values), per-task statistics (min/max/mean/median), and peak RSS. Use
-@c --stats-json for machine-readable JSON output.
+@c --format @c json @c --stats for machine-readable output. Statistics are
+stored in the same JSON envelope. @c --stats-json remains a compatibility
+alias and never emits a second JSON document.
+
+@subsection agent-query-contract Agent query contract
+
+Machine queries are bounded with @c --max-results (default 200) and
+@c --max-depth (default 64). A truncated response sets
+@c summary.complete=false. Paths use @c --cross-state
+@c never|once|unlimited and default to @c never. Saved netlists use schema
+version 4 and retain dependency role and precision; version 3 files can still
+be loaded conservatively.
 
 @subsection perf-considerations Considerations
 

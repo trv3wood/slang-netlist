@@ -26,12 +26,16 @@ struct PendingRvalue {
   // Edge kind to stamp on the resolved edge. Non-None marks this rvalue
   // as a clocking/reset signal from an event list.
   ast::EdgeKind edgeKind{ast::EdgeKind::None};
+  DependencyRole role{DependencyRole::Data};
+  DependencyPrecision precision{DependencyPrecision::Range};
 
   PendingRvalue(const ast::ValueSymbol *symbol, const ast::Expression *lsp,
                 DriverBitRange bounds, NetlistNode *node,
-                ast::EdgeKind edgeKind = ast::EdgeKind::None)
+                ast::EdgeKind edgeKind = ast::EdgeKind::None,
+                DependencyRole role = DependencyRole::Data,
+                DependencyPrecision precision = DependencyPrecision::Range)
       : symbol(symbol), lsp(lsp), bounds(std::move(bounds)), node(node),
-        edgeKind(edgeKind) {}
+        edgeKind(edgeKind), role(role), precision(precision) {}
 };
 
 } // namespace slang::netlist

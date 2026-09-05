@@ -93,6 +93,24 @@ PYBIND11_MODULE(pyslang_netlist, m) {
           },
           py::arg("name"), py::arg("lower"), py::arg("upper"),
           "Lookup nodes by hierarchical name and bit range overlap.")
+      .def(
+          "lookup_all",
+          [](const netlist::NetlistGraph &self, std::string_view name) {
+            py::list result;
+            for (auto *node : self.lookupAll(name)) {
+              result.append(py::cast(node, py::return_value_policy::reference));
+            }
+            return result;
+          },
+          py::arg("name"), "返回具有该层次路径的全部节点。")
+      .def(
+          "lookup_by_id",
+          [](const netlist::NetlistGraph &self, size_t id) -> py::object {
+            auto *node = self.lookupById(id);
+            return node ? py::cast(node, py::return_value_policy::reference)
+                        : py::none();
+          },
+          py::arg("id"), "按当前图工件的 ID 查找节点。")
       .def("num_nodes", &netlist::NetlistGraph::numNodes,
            "Get the number of nodes in the graph.")
       .def("num_edges", &netlist::NetlistGraph::numEdges,
@@ -180,6 +198,32 @@ PYBIND11_MODULE(pyslang_netlist, m) {
           "Return all nodes that can reach this node via combinational "
           "edges in the backward direction. Stops at State nodes.")
       .def(
+          "get_signal_comb_fan_in",
+          [](const netlist::NetlistGraph &self, std::string_view name,
+             int32_t lower, int32_t upper) {
+            py::list result;
+            for (auto *node : self.getSignalCombFanIn(
+                     name, netlist::DriverBitRange(lower, upper))) {
+              result.append(py::cast(node, py::return_value_policy::reference));
+            }
+            return result;
+          },
+          py::arg("name"), py::arg("lower"), py::arg("upper"),
+          "返回任意信号范围的组合扇入节点。")
+      .def(
+          "get_signal_comb_fan_out",
+          [](const netlist::NetlistGraph &self, std::string_view name,
+             int32_t lower, int32_t upper) {
+            py::list result;
+            for (auto *node : self.getSignalCombFanOut(
+                     name, netlist::DriverBitRange(lower, upper))) {
+              result.append(py::cast(node, py::return_value_policy::reference));
+            }
+            return result;
+          },
+          py::arg("name"), py::arg("lower"), py::arg("upper"),
+          "返回任意信号范围的组合扇出节点。")
+      .def(
           "find_nodes",
           [](const netlist::NetlistGraph &self, std::string_view pattern) {
             py::list result;
@@ -245,6 +289,23 @@ PYBIND11_MODULE(pyslang_netlist, m) {
       .value("Merge", netlist::NodeKind::Merge)
       .value("State", netlist::NodeKind::State)
       .value("Constant", netlist::NodeKind::Constant);
+
+  py::enum_<netlist::DependencyRole>(m, "DependencyRole")
+      .value("Data", netlist::DependencyRole::Data)
+      .value("Control", netlist::DependencyRole::Control)
+      .value("Index", netlist::DependencyRole::Index)
+      .value("Address", netlist::DependencyRole::Address)
+      .value("Event", netlist::DependencyRole::Event)
+      .value("Clock", netlist::DependencyRole::Clock)
+      .value("Reset", netlist::DependencyRole::Reset)
+      .value("PortConnection", netlist::DependencyRole::PortConnection)
+      .value("Unknown", netlist::DependencyRole::Unknown);
+
+  py::enum_<netlist::DependencyPrecision>(m, "DependencyPrecision")
+      .value("Exact", netlist::DependencyPrecision::Exact)
+      .value("Range", netlist::DependencyPrecision::Range)
+      .value("Signal", netlist::DependencyPrecision::Signal)
+      .value("Unknown", netlist::DependencyPrecision::Unknown);
 
   py::class_<netlist::NetlistNode>(m, "NetlistNode")
       .def_property_readonly(
@@ -316,8 +377,16 @@ PYBIND11_MODULE(pyslang_netlist, m) {
       .def_property_readonly(
           "bounds",
           [](const netlist::NetlistEdge &self) { return self.bounds; })
-      .def_property_readonly("disabled", [](const netlist::NetlistEdge &self) {
-        return self.disabled;
+      .def_property_readonly(
+          "disabled",
+          [](const netlist::NetlistEdge &self) { return self.disabled; })
+      .def_property_readonly(
+          "edge_kind",
+          [](const netlist::NetlistEdge &self) { return self.edgeKind; })
+      .def_property_readonly(
+          "role", [](const netlist::NetlistEdge &self) { return self.role; })
+      .def_property_readonly("precision", [](const netlist::NetlistEdge &self) {
+        return self.precision;
       });
 
   py::class_<netlist::NetlistPath>(m, "NetlistPath")

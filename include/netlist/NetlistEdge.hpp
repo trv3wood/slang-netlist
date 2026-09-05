@@ -10,6 +10,28 @@ namespace slang::netlist {
 
 class NetlistNode;
 
+/// 依赖边在 RTL 调试中的语义角色。
+enum class DependencyRole {
+  Data,
+  Control,
+  Index,
+  Address,
+  Event,
+  Clock,
+  Reset,
+  PortConnection,
+  Unknown,
+};
+
+/// 依赖边所能保证的映射精度。
+enum class DependencyPrecision { Exact, Range, Signal, Unknown };
+
+/// 返回稳定的机器协议名称。
+[[nodiscard]] auto toString(DependencyRole role) -> std::string_view;
+
+/// 返回稳定的机器协议名称。
+[[nodiscard]] auto toString(DependencyPrecision precision) -> std::string_view;
+
 /// A class representing a dependency between two nodes in the netlist.
 ///
 /// The driven symbol annotation is stored as a pointer into the owning
@@ -18,6 +40,8 @@ class NetlistNode;
 class NetlistEdge : public DirectedEdge<NetlistNode, NetlistEdge> {
 public:
   ast::EdgeKind edgeKind{ast::EdgeKind::None};
+  DependencyRole role{DependencyRole::Data};
+  DependencyPrecision precision{DependencyPrecision::Range};
   SymbolReference const *symbol{nullptr};
   DriverBitRange bounds;
   bool disabled{false};
@@ -26,6 +50,12 @@ public:
       : DirectedEdge(sourceNode, targetNode) {}
 
   auto setEdgeKind(ast::EdgeKind kind) { this->edgeKind = kind; }
+
+  /// 设置依赖语义和精度。
+  void setSemantics(DependencyRole newRole, DependencyPrecision newPrecision) {
+    role = newRole;
+    precision = newPrecision;
+  }
 
   /// Associate a driven symbol / bit range with this edge.
   ///

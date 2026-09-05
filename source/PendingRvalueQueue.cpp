@@ -21,12 +21,13 @@ thread_local DeferredGraphWork *threadLocalDeferredWork = nullptr;
 void PendingRvalueQueue::enqueue(ast::ValueSymbol const &symbol,
                                  ast::Expression const &lsp,
                                  DriverBitRange bounds, NetlistNode *node,
-                                 ast::EdgeKind edgeKind) {
+                                 ast::EdgeKind edgeKind, DependencyRole role,
+                                 DependencyPrecision precision) {
   if (threadLocalDeferredWork) {
-    threadLocalDeferredWork->pendingRValues.emplace_back(&symbol, &lsp, bounds,
-                                                         node, edgeKind);
+    threadLocalDeferredWork->pendingRValues.emplace_back(
+        &symbol, &lsp, bounds, node, edgeKind, role, precision);
   } else {
-    queue.emplace_back(&symbol, &lsp, bounds, node, edgeKind);
+    queue.emplace_back(&symbol, &lsp, bounds, node, edgeKind, role, precision);
   }
 }
 
@@ -71,7 +72,7 @@ void PendingRvalueQueue::emitEdgesFor(PendingRvalue const &pending) {
   // If there is state variable matching this rvalue.
   if (auto *stateNode = builder.getVariable(*pending.symbol, pending.bounds)) {
     builder.addDependency(*stateNode, *pending.node, symRef, pending.bounds,
-                          pending.edgeKind);
+                          pending.edgeKind, pending.role, pending.precision);
     return;
   }
 
@@ -92,7 +93,8 @@ void PendingRvalueQueue::emitEdgesFor(PendingRvalue const &pending) {
         for (auto const &source : driverList) {
           if (source.node != nullptr) {
             builder.addDependency(*source.node, *pending.node, symRef,
-                                  *edgeBounds, pending.edgeKind);
+                                  *edgeBounds, pending.edgeKind, pending.role,
+                                  pending.precision);
           }
         }
       });

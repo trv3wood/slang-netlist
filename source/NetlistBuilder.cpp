@@ -66,14 +66,22 @@ void NetlistBuilder::build(const ast::Symbol &root) { pipeline.run(root); }
 
 void NetlistBuilder::finalize() { pipeline.finalize(); }
 
-void NetlistBuilder::addDependency(NetlistNode &source, NetlistNode &target) {
-  source.addEdge(target);
+void NetlistBuilder::addDependency(NetlistNode &source, NetlistNode &target,
+                                   DependencyRole role,
+                                   DependencyPrecision precision) {
+  auto &edge = source.addEdge(target);
+  edge.setSemantics(role, precision);
 }
 
 void NetlistBuilder::addDependency(NetlistNode &source, NetlistNode &target,
                                    SymbolReference const *symbol,
                                    DriverBitRange bounds,
-                                   ast::EdgeKind edgeKind) {
+                                   ast::EdgeKind edgeKind, DependencyRole role,
+                                   DependencyPrecision precision) {
+
+  if (edgeKind != ast::EdgeKind::None && role == DependencyRole::Data) {
+    role = DependencyRole::Event;
+  }
 
   // Retrieve the bounds of the driving node, if any.
   auto nodeBounds = source.getBounds();
@@ -100,8 +108,10 @@ void NetlistBuilder::addDependency(NetlistNode &source, NetlistNode &target,
     auto &newEdge = source.addNewEdge(target);
     newEdge.setVariable(symbol, edgeBounds);
     newEdge.setEdgeKind(edgeKind);
+    newEdge.setSemantics(role, precision);
   } else {
     edge.setEdgeKind(edgeKind);
+    edge.setSemantics(role, precision);
   }
 }
 
@@ -233,13 +243,13 @@ auto NetlistBuilder::resolveInterfaceRef(ast::EvalContext &evalCtx,
   return result;
 }
 
-void NetlistBuilder::addDriversToNode(DriverList const &drivers,
-                                      NetlistNode &node,
-                                      SymbolReference const *symbol,
-                                      DriverBitRange bounds) {
+void NetlistBuilder::addDriversToNode(
+    DriverList const &drivers, NetlistNode &node, SymbolReference const *symbol,
+    DriverBitRange bounds, DependencyRole role, DependencyPrecision precision) {
   for (auto driver : drivers) {
     if (driver.node != nullptr) {
-      addDependency(*driver.node, node, symbol, bounds);
+      addDependency(*driver.node, node, symbol, bounds, ast::EdgeKind::None,
+                    role, precision);
     }
   }
 }
@@ -259,7 +269,9 @@ auto NetlistBuilder::merge(NetlistNode &a, NetlistNode &b) -> NetlistNode & {
 void NetlistBuilder::addRvalue(ast::EvalContext &evalCtx,
                                ast::ValueSymbol const &symbol,
                                ast::Expression const &lsp,
-                               DriverBitRange bounds, NetlistNode *node) {
+                               DriverBitRange bounds, NetlistNode *node,
+                               DependencyRole role,
+                               DependencyPrecision precision) {
 
   // For rvalues that are via a modport port, resolve the interface variables
   // they are driven from and add dependencies from each interface variable to
@@ -268,13 +280,15 @@ void NetlistBuilder::addRvalue(ast::EvalContext &evalCtx,
     for (auto &var : resolveInterfaceRef(
              evalCtx, symbol.as<ast::ModportPortSymbol>(), lsp)) {
       if (auto *varNode = getVariable(var.symbol, var.bounds)) {
-        addDependency(*varNode, *node, toSymbolRef(symbol), bounds);
+        addDependency(*varNode, *node, toSymbolRef(symbol), bounds,
+                      ast::EdgeKind::None, role, precision);
       }
     }
     return;
   }
 
-  pendingQueue.enqueue(symbol, lsp, bounds, node);
+  pendingQueue.enqueue(symbol, lsp, bounds, node, ast::EdgeKind::None, role,
+                       precision);
 }
 
 void NetlistBuilder::hookupOutputPort(ast::ValueSymbol const &symbol,
@@ -313,7 +327,9 @@ void NetlistBuilder::hookupOutputPort(ast::ValueSymbol const &symbol,
       auto symRef = toSymbolRef(symbol);
       for (auto const &driver : driverList) {
         if (driver.node != nullptr) {
-          addDependency(*driver.node, *portNode, symRef, bounds);
+          addDependency(*driver.node, *portNode, symRef, bounds,
+                        ast::EdgeKind::None, DependencyRole::PortConnection,
+                        DependencyPrecision::Range);
         }
       }
     }

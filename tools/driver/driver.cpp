@@ -27,7 +27,9 @@
 #include <cctype>
 #include <charconv>
 #include <chrono>
+#include <filesystem>
 #include <iostream>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -211,6 +213,35 @@ auto reportPath(FileTable const &fileTable, NetlistDiagnostics *diagnostics,
 auto main(int argc, char **argv) -> int {
   OS::setupConsole();
 
+  // Skill 导出是独立操作，不需要解析或 elaboration RTL。
+  if (argc == 4 && std::string_view(argv[1]) == "skill" &&
+      std::string_view(argv[2]) == "export") {
+    namespace fs = std::filesystem;
+    fs::path destination(argv[3]);
+    if (fs::exists(destination)) {
+      fmt::print(stderr, "error: skill destination already exists: {}\n",
+                 destination.string());
+      return 2;
+    }
+    fs::path source = SLANG_NETLIST_SKILL_SOURCE;
+    auto installed =
+        fs::weakly_canonical(fs::path(argv[0])).parent_path().parent_path() /
+        "share/slang-netlist/skill";
+    if (fs::exists(installed)) {
+      source = installed;
+    }
+    std::error_code error;
+    fs::copy(source, destination, fs::copy_options::recursive, error);
+    if (error) {
+      fmt::print(stderr, "error: could not export skill: {}\n",
+                 error.message());
+      return 1;
+    }
+    fmt::print("Exported slang-netlist {} skill to {}\n", SLANG_NETLIST_VERSION,
+               destination.string());
+    return 0;
+  }
+
   Driver driver;
   driver.addStandardArgs();
 
@@ -296,6 +327,23 @@ auto main(int argc, char **argv) -> int {
                      "to the node.",
                      "<name>");
 
+  std::optional<uint64_t> fromNodeId;
+  driver.cmdLine.add("--from-node-id", fromNodeId,
+                     "Select the path start by artifact-scoped node ID",
+                     "<id>");
+  std::optional<uint64_t> toNodeId;
+  driver.cmdLine.add("--to-node-id", toNodeId,
+                     "Select the path finish by artifact-scoped node ID",
+                     "<id>");
+  std::optional<std::string> fromKind;
+  driver.cmdLine.add("--from-kind", fromKind,
+                     "Disambiguate the named path start by node kind",
+                     "<kind>");
+  std::optional<std::string> toKind;
+  driver.cmdLine.add("--to-kind", toKind,
+                     "Disambiguate the named path finish by node kind",
+                     "<kind>");
+
   std::optional<std::string> fanOutName;
   driver.cmdLine.add("--fan-out", fanOutName,
                      "Report the combinational fan-out cone from a named node",
@@ -376,6 +424,23 @@ auto main(int argc, char **argv) -> int {
                      "stdout ('-' for stdout)",
                      "<file>", CommandLineFlags::FilePath);
 
+  std::optional<uint64_t> maxResults;
+  driver.cmdLine.add("--max-results", maxResults,
+                     "Maximum number of machine-query results (default 200; "
+                     "0 means unlimited)",
+                     "<count>");
+
+  std::optional<uint64_t> maxDepth;
+  driver.cmdLine.add("--max-depth", maxDepth,
+                     "Maximum traversal depth (default 64; 0 means unlimited)",
+                     "<depth>");
+
+  std::optional<std::string> crossState;
+  driver.cmdLine.add("--cross-state", crossState,
+                     "State traversal policy for paths: never (default), "
+                     "once, or unlimited",
+                     "<never|once|unlimited>");
+
   std::optional<std::string> saveNetlistFile;
   driver.cmdLine.add("--save-netlist", saveNetlistFile,
                      "Save the netlist to a JSON file", "<file>",
@@ -398,7 +463,8 @@ auto main(int argc, char **argv) -> int {
   }
 
   if (showVersion == true) {
-    printf("slang-netlist version %d.%d.%d+%s\n", VersionInfo::getMajor(),
+    printf("slang-netlist version %s (slang %d.%d.%d+%s)\n",
+           SLANG_NETLIST_VERSION, VersionInfo::getMajor(),
            VersionInfo::getMinor(), VersionInfo::getPatch(),
            std::string(VersionInfo::getHash()).c_str());
     return 0;
@@ -428,6 +494,21 @@ auto main(int argc, char **argv) -> int {
       return 1;
     }
   }
+  if (statsJson) {
+    outputFormat = Format::Json;
+  }
+  auto crossStatePolicy = crossState.value_or("never");
+  if (crossStatePolicy != "never" && crossStatePolicy != "once" &&
+      crossStatePolicy != "unlimited") {
+    fmt::print(stderr, "error: invalid --cross-state value '{}'\n",
+               crossStatePolicy);
+    return 2;
+  }
+
+  using Json = nlohmann::json;
+  std::optional<Json> pendingEnvelope;
+  int machineExitCode = 0;
+  std::optional<size_t> queryTotal;
 
   auto writeOutput = [&](std::string_view content) {
     if (outputFile && *outputFile != "-") {
@@ -439,25 +520,48 @@ auto main(int argc, char **argv) -> int {
 
   // Emit a table either as a formatted text table or as a JSON array of
   // objects keyed by the lower-cased column headers.
-  auto emitTable = [&](Utilities::Row const &header,
+  auto emitTable = [&](std::string_view command, Utilities::Row const &header,
                        Utilities::Table const &table) {
     if (outputFormat == Format::Json) {
-      JsonWriter writer;
-      writer.setPrettyPrint(true);
-      writer.startArray();
-      for (auto const &row : table) {
-        writer.startObject();
+      Json items = Json::array();
+      auto limit = maxResults.value_or(200);
+      auto count =
+          limit == 0 ? table.size() : std::min(table.size(), size_t(limit));
+      for (size_t rowIndex = 0; rowIndex < count; ++rowIndex) {
+        auto const &row = table[rowIndex];
+        Json item = Json::object();
         for (size_t i = 0; i < header.size() && i < row.size(); ++i) {
           std::string key(header[i].size(), '\0');
           std::transform(header[i].begin(), header[i].end(), key.begin(),
                          [](unsigned char c) { return std::tolower(c); });
-          writer.writeProperty(key);
-          writer.writeValue(row[i]);
+          item[key] = row[i];
         }
-        writer.endObject();
+        items.push_back(std::move(item));
       }
-      writer.endArray();
-      writeOutput(fmt::format("{}\n", writer.view()));
+      auto total = queryTotal.value_or(table.size());
+      auto truncated = count < table.size() || total > table.size();
+      machineExitCode = truncated ? 4 : (table.empty() ? 3 : 0);
+      pendingEnvelope =
+          Json{{"schema_version", 1},
+               {"tool",
+                {{"name", "slang-netlist"},
+                 {"version", SLANG_NETLIST_VERSION},
+                 {"slang_version",
+                  fmt::format("{}.{}.{}+{}", VersionInfo::getMajor(),
+                              VersionInfo::getMinor(), VersionInfo::getPatch(),
+                              VersionInfo::getHash())},
+                 {"graph_schema_version", NetlistSerializer::formatVersion}}},
+               {"command", command},
+               {"query", Json::object()},
+               {"data", {{"items", std::move(items)}}},
+               {"diagnostics", Json::array()},
+               {"summary",
+                {{"status",
+                  truncated ? "truncated" : (table.empty() ? "empty" : "ok")},
+                 {"complete", !truncated},
+                 {"returned", count},
+                 {"total", total}}}};
+      queryTotal.reset();
     } else {
       netlist::FormatBuffer buffer;
       Utilities::formatTable(buffer, header, table);
@@ -571,62 +675,33 @@ auto main(int argc, char **argv) -> int {
   // Pointer to the graph, set once it's constructed, for printStats access.
   NetlistGraph *graphPtr = nullptr;
 
-  auto printStatsJson = [&] {
+  auto makeStatsJson = [&] {
     auto peakRSS = OS::getPeakMemoryBytes();
-    JsonWriter writer;
-    writer.startObject();
-    writer.writeProperty("time_seconds");
-    writer.startObject();
+    Json result;
     for (auto &[name, seconds] : phaseTimes) {
-      writer.writeProperty(name);
-      writer.writeValue(seconds);
+      result["time_seconds"][name] = seconds;
     }
-    writer.endObject();
-    writer.writeProperty("peak_rss_bytes");
-    writer.writeValue(peakRSS);
+    result["peak_rss_bytes"] = peakRSS;
 
     if (graphPtr) {
       auto const &bp = graphPtr->getBuildProfile();
-      writer.writeProperty("netlist_profile");
-      writer.startObject();
-
-      writer.writeProperty("phase1_collect_seconds");
-      writer.writeValue(bp.phase1_collectSeconds);
-      writer.writeProperty("phase2_parallel_seconds");
-      writer.writeValue(bp.phase2_parallelSeconds);
-      writer.writeProperty("phase3_drain_seconds");
-      writer.writeValue(bp.phase3_drainSeconds);
-      writer.writeProperty("phase4_rvalue_seconds");
-      writer.writeValue(bp.phase4_rvalueSeconds);
-
-      writer.writeProperty("drain_pending_rvalues_seconds");
-      writer.writeValue(bp.drain_pendingRValuesSeconds);
-      writer.writeProperty("drain_merges_seconds");
-      writer.writeValue(bp.drain_mergesSeconds);
-
-      writer.writeProperty("deferred_block_count");
-      writer.writeValue(static_cast<int64_t>(bp.deferredBlockCount));
-      writer.writeProperty("deferred_pending_rvalue_count");
-      writer.writeValue(static_cast<int64_t>(bp.deferredPendingRValueCount));
-
-      writer.writeProperty("task_min_seconds");
-      writer.writeValue(bp.taskMinSeconds);
-      writer.writeProperty("task_max_seconds");
-      writer.writeValue(bp.taskMaxSeconds);
-      writer.writeProperty("task_mean_seconds");
-      writer.writeValue(bp.taskMeanSeconds);
-      writer.writeProperty("task_median_seconds");
-      writer.writeValue(bp.taskMedianSeconds);
-      writer.writeProperty("task_total_seconds");
-      writer.writeValue(bp.taskTotalSeconds);
-      writer.writeProperty("num_threads");
-      writer.writeValue(static_cast<int64_t>(bp.numThreads));
-
-      writer.endObject();
+      result["netlist_profile"] = {
+          {"phase1_collect_seconds", bp.phase1_collectSeconds},
+          {"phase2_parallel_seconds", bp.phase2_parallelSeconds},
+          {"phase3_drain_seconds", bp.phase3_drainSeconds},
+          {"phase4_rvalue_seconds", bp.phase4_rvalueSeconds},
+          {"drain_pending_rvalues_seconds", bp.drain_pendingRValuesSeconds},
+          {"drain_merges_seconds", bp.drain_mergesSeconds},
+          {"deferred_block_count", bp.deferredBlockCount},
+          {"deferred_pending_rvalue_count", bp.deferredPendingRValueCount},
+          {"task_min_seconds", bp.taskMinSeconds},
+          {"task_max_seconds", bp.taskMaxSeconds},
+          {"task_mean_seconds", bp.taskMeanSeconds},
+          {"task_median_seconds", bp.taskMedianSeconds},
+          {"task_total_seconds", bp.taskTotalSeconds},
+          {"num_threads", bp.numThreads}};
     }
-
-    writer.endObject();
-    OS::print(fmt::format("{}\n", writer.view()));
+    return result;
   };
 
   auto printStatsHuman = [&] {
@@ -678,11 +753,18 @@ auto main(int argc, char **argv) -> int {
   };
 
   auto printStats = [&] {
-    if (stats) {
+    if (stats && outputFormat == Format::Table) {
       printStatsHuman();
     }
-    if (statsJson) {
-      printStatsJson();
+    if (pendingEnvelope) {
+      if (graphPtr) {
+        (*pendingEnvelope)["artifact_id"] = graphPtr->getArtifactId();
+      }
+      if (stats || statsJson) {
+        (*pendingEnvelope)["stats"] = makeStatsJson();
+      }
+      writeOutput(pendingEnvelope->dump(2) + "\n");
+      pendingEnvelope.reset();
     }
   };
 
@@ -766,6 +848,168 @@ auto main(int argc, char **argv) -> int {
 
     // --- Analysis commands that work on both built and loaded netlists ---
 
+    auto locationJson = [&](std::optional<TextLocation> const &location) {
+      if (!location) {
+        return Json(nullptr);
+      }
+      return Json{{"file", std::string(graph.fileTable.getFilename(
+                               location->fileIndex))},
+                  {"line", location->line},
+                  {"column", location->column}};
+    };
+
+    auto nodeJson = [&](NetlistNode const &node) {
+      Json result{{"id", node.ID},
+                  {"kind", toString(node.kind)},
+                  {"path", node.getHierarchicalPath()
+                               ? Json(*node.getHierarchicalPath())
+                               : Json(nullptr)},
+                  {"bounds", node.getBounds()
+                                 ? Json::array({node.getBounds()->lower(),
+                                                node.getBounds()->upper()})
+                                 : Json(nullptr)},
+                  {"location", locationJson(node.getLocation())}};
+      result["name"] = node.getHierarchicalPath()
+                           ? Json(*node.getHierarchicalPath())
+                           : Json(nullptr);
+      auto coverage = graph.getBlackBoxCoverage(node);
+      result["black_box_coverage"] =
+          coverage == BlackBoxCoverage::Boundary
+              ? "boundary"
+              : (coverage == BlackBoxCoverage::Contained ? "contained"
+                                                         : "outside");
+      if (node.kind == NodeKind::Constant) {
+        // 常量值属于节点语义，机器输出不能只暴露显示名称。
+        result["value"] = node.as<Constant>().value.toString();
+      }
+      return result;
+    };
+
+    auto edgeJson = [&](NetlistEdge const &edge) {
+      return Json{
+          {"source", edge.getSourceNode().ID},
+          {"target", edge.getTargetNode().ID},
+          {"symbol",
+           edge.symbol ? Json(edge.symbol->hierarchicalPath) : Json(nullptr)},
+          {"bounds", Json::array({edge.bounds.lower(), edge.bounds.upper()})},
+          {"edge_kind", ast::toString(edge.edgeKind)},
+          {"role", toString(edge.role)},
+          {"precision", toString(edge.precision)},
+          {"disabled", edge.disabled}};
+    };
+
+    auto setEnvelope = [&](std::string_view command, Json query, Json data,
+                           size_t returned, size_t total,
+                           bool complete = true) {
+      pendingEnvelope =
+          Json{{"schema_version", 1},
+               {"tool",
+                {{"name", "slang-netlist"},
+                 {"version", SLANG_NETLIST_VERSION},
+                 {"slang_version",
+                  fmt::format("{}.{}.{}+{}", VersionInfo::getMajor(),
+                              VersionInfo::getMinor(), VersionInfo::getPatch(),
+                              VersionInfo::getHash())},
+                 {"graph_schema_version", NetlistSerializer::formatVersion}}},
+               {"artifact_id", graph.getArtifactId()},
+               {"command", command},
+               {"query", std::move(query)},
+               {"data", std::move(data)},
+               {"diagnostics", Json::array()},
+               {"summary",
+                {{"status",
+                  !complete ? "truncated" : (returned == 0 ? "empty" : "ok")},
+                 {"complete", complete},
+                 {"returned", returned},
+                 {"total", total}}}};
+    };
+
+    auto emitNodeGraph = [&](std::string_view command, Json query,
+                             std::vector<NetlistNode *> const &input,
+                             std::optional<size_t> knownTotal = std::nullopt) {
+      auto limit = maxResults.value_or(200);
+      auto count =
+          limit == 0 ? input.size() : std::min(input.size(), size_t(limit));
+      std::unordered_set<NetlistNode const *> included;
+      Json nodes = Json::array();
+      for (size_t i = 0; i < count; ++i) {
+        included.insert(input[i]);
+        nodes.push_back(nodeJson(*input[i]));
+      }
+      Json edges = Json::array();
+      for (auto const *node : included) {
+        for (auto const &edge : node->getOutEdges()) {
+          if (included.contains(&edge->getTargetNode())) {
+            edges.push_back(edgeJson(*edge));
+          }
+        }
+      }
+      auto total = knownTotal.value_or(input.size());
+      auto complete = count == input.size() && total == input.size();
+      auto items = nodes;
+      setEnvelope(command, std::move(query),
+                  {{"nodes", std::move(nodes)},
+                   {"edges", std::move(edges)},
+                   {"items", std::move(items)}},
+                  count, total, complete);
+      printStats();
+      return complete ? (count == 0 ? 3 : 0) : 4;
+    };
+
+    auto parseNodeKind = [](std::string_view value) -> std::optional<NodeKind> {
+      if (value == "port")
+        return NodeKind::Port;
+      if (value == "variable")
+        return NodeKind::Variable;
+      if (value == "assignment")
+        return NodeKind::Assignment;
+      if (value == "conditional")
+        return NodeKind::Conditional;
+      if (value == "case")
+        return NodeKind::Case;
+      if (value == "merge")
+        return NodeKind::Merge;
+      if (value == "state")
+        return NodeKind::State;
+      if (value == "constant")
+        return NodeKind::Constant;
+      return std::nullopt;
+    };
+
+    auto resolvePathNode = [&](std::string const &name,
+                               std::optional<uint64_t> id,
+                               std::optional<std::string> const &kind,
+                               std::string_view label) -> NetlistNode * {
+      if (id) {
+        auto *node = graph.lookupById(*id);
+        if (node == nullptr) {
+          SLANG_THROW(std::runtime_error(
+              fmt::format("could not find {} node ID: {}", label, *id)));
+        }
+        return node;
+      }
+      auto candidates = graph.lookupAll(name);
+      if (kind) {
+        auto parsed = parseNodeKind(*kind);
+        if (!parsed) {
+          SLANG_THROW(std::runtime_error(
+              fmt::format("invalid {} node kind: {}", label, *kind)));
+        }
+        std::erase_if(candidates,
+                      [&](auto *node) { return node->kind != *parsed; });
+      }
+      if (candidates.empty()) {
+        SLANG_THROW(std::runtime_error(
+            fmt::format("could not find {} point: {}", label, name)));
+      }
+      if (candidates.size() > 1) {
+        SLANG_THROW(std::runtime_error(
+            fmt::format("ambiguous {} point: {}; use --{}-kind or --{}-node-id",
+                        label, name, label, label)));
+      }
+      return candidates[0];
+    };
+
     // A lone --from/--to endpoint means "the reachable cone", which is exactly
     // the combinational fan-out/fan-in from that node. Alias it onto the
     // corresponding cone selector so every downstream handler (tabular output
@@ -779,6 +1023,15 @@ auto main(int argc, char **argv) -> int {
     }
 
     if (reportRegisters) {
+      if (outputFormat == Format::Json) {
+        std::vector<NetlistNode *> states;
+        for (auto const &node : graph.filterNodes(NodeKind::State)) {
+          auto const &state = node->as<State>();
+          if (passesFilters(state.hierarchicalPath))
+            states.push_back(node.get());
+        }
+        return emitNodeGraph("registers", Json::object(), states);
+      }
       auto header = Utilities::Row{"Name", "Location"};
       auto table = Utilities::Table{};
 
@@ -791,15 +1044,40 @@ auto main(int argc, char **argv) -> int {
         table.push_back(Utilities::Row{stateNode.hierarchicalPath, loc});
       }
 
-      emitTable(header, table);
+      emitTable("registers", header, table);
       printStats();
-      return 0;
+      return outputFormat == Format::Json ? machineExitCode : 0;
     }
 
     // Report combinational loops.
     if (combLoops) {
       CombLoops combLoopsAnalysis(graph);
       auto cycles = combLoopsAnalysis.getAllLoops();
+      if (outputFormat == Format::Json) {
+        Json loops = Json::array();
+        auto limit = maxResults.value_or(200);
+        auto count =
+            limit == 0 ? cycles.size() : std::min(cycles.size(), size_t(limit));
+        for (size_t cycleIndex = 0; cycleIndex < count; ++cycleIndex) {
+          Json nodes = Json::array();
+          Json edges = Json::array();
+          auto const &cycle = cycles[cycleIndex];
+          for (size_t i = 0; i < cycle.size(); ++i) {
+            nodes.push_back(nodeJson(*cycle[i]));
+            if (i + 1 < cycle.size()) {
+              auto edge = cycle[i]->findEdgeTo(*cycle[i + 1]);
+              if (edge != cycle[i]->end())
+                edges.push_back(edgeJson(**edge));
+            }
+          }
+          loops.push_back(
+              {{"nodes", std::move(nodes)}, {"edges", std::move(edges)}});
+        }
+        setEnvelope("comb-loops", Json::object(), {{"loops", std::move(loops)}},
+                    count, cycles.size(), count == cycles.size());
+        printStats();
+        return cycles.empty() ? 3 : (count == cycles.size() ? 0 : 4);
+      }
       if (cycles.empty()) {
         OS::print("No combinational loops detected in the design.\n");
       } else {
@@ -868,7 +1146,16 @@ auto main(int argc, char **argv) -> int {
       auto nodes = findPattern.has_value()
                        ? graph.findNodes(*findPattern)
                        : graph.findNodesRegex(*findRegexPattern);
-      auto header = Utilities::Row{"Name", "Location"};
+      if (outputFormat == Format::Json) {
+        std::erase_if(nodes, [&](auto *node) {
+          return !passesFilters(node->getHierarchicalPath().value_or(""));
+        });
+        return emitNodeGraph(
+            findPattern ? "find" : "find-regex",
+            {{"pattern", findPattern ? *findPattern : *findRegexPattern}},
+            nodes);
+      }
+      auto header = Utilities::Row{"ID", "Kind", "Name", "Bounds", "Location"};
       auto table = Utilities::Table{};
       for (auto const *node : nodes) {
         auto path = node->getHierarchicalPath();
@@ -876,61 +1163,107 @@ auto main(int argc, char **argv) -> int {
           continue;
         }
         auto loc = node->getLocation();
-        table.push_back(Utilities::Row{std::string(path.value_or("(unnamed)")),
-                                       loc ? loc->toString(graph.fileTable)
-                                           : std::string()});
+        table.push_back(Utilities::Row{
+            std::to_string(node->ID), std::string(toString(node->kind)),
+            std::string(path.value_or("(unnamed)")),
+            node->getBounds() ? toString(*node->getBounds()) : std::string(),
+            loc ? loc->toString(graph.fileTable) : std::string()});
       }
-      emitTable(header, table);
+      emitTable(findPattern ? "find" : "find-regex", header, table);
       printStats();
-      return 0;
+      return outputFormat == Format::Json ? machineExitCode : 0;
     }
 
     // Report combinational fan-out from a named node.
     if (fanOutName.has_value()) {
-      auto *node = graph.lookup(*fanOutName);
-      if (node == nullptr) {
-        SLANG_THROW(std::runtime_error(
-            fmt::format("could not find node: {}", *fanOutName)));
+      auto [path, range] = parseNameAndRange(*fanOutName);
+      if (!graph.hasSignal(path)) {
+        SLANG_THROW(
+            std::runtime_error(fmt::format("could not find signal: {}", path)));
       }
-      auto fanOut = graph.getCombFanOut(*node);
-      auto header = Utilities::Row{"Name", "Location"};
+      auto queryRange = range.value_or(
+          DriverBitRange{0, std::numeric_limits<int32_t>::max()});
+      auto fanOut =
+          graph.getSignalCombFanOut(path, queryRange, maxDepth.value_or(64));
+      if (outputFormat == Format::Json && maxDepth.value_or(64) != 0) {
+        queryTotal = graph.getSignalCombFanOut(path, queryRange).size();
+      }
+      if (outputFormat == Format::Json) {
+        if (!scopeFilters.empty() || !nameFilters.empty()) {
+          std::erase_if(fanOut, [&](auto *node) {
+            auto nodePath = node->getHierarchicalPath();
+            return nodePath && !passesFilters(*nodePath);
+          });
+        }
+        auto total = queryTotal;
+        queryTotal.reset();
+        return emitNodeGraph(
+            "fan-out",
+            {{"signal", *fanOutName}, {"max_depth", maxDepth.value_or(64)}},
+            fanOut, total);
+      }
+      auto header = Utilities::Row{"ID", "Kind", "Name", "Bounds", "Location"};
       auto table = Utilities::Table{};
       for (auto const *n : fanOut) {
         auto path = n->getHierarchicalPath();
         if (path.has_value() && passesFilters(*path)) {
           auto loc = n->getLocation();
-          table.push_back(Utilities::Row{std::string(*path),
-                                         loc ? loc->toString(graph.fileTable)
-                                             : std::string()});
+          table.push_back(Utilities::Row{
+              std::to_string(n->ID), std::string(toString(n->kind)),
+              std::string(*path),
+              n->getBounds() ? toString(*n->getBounds()) : std::string(),
+              loc ? loc->toString(graph.fileTable) : std::string()});
         }
       }
-      emitTable(header, table);
+      emitTable("fan-out", header, table);
       printStats();
-      return 0;
+      return outputFormat == Format::Json ? machineExitCode : 0;
     }
 
     // Report combinational fan-in to a named node.
     if (fanInName.has_value()) {
-      auto *node = graph.lookup(*fanInName);
-      if (node == nullptr) {
-        SLANG_THROW(std::runtime_error(
-            fmt::format("could not find node: {}", *fanInName)));
+      auto [path, range] = parseNameAndRange(*fanInName);
+      if (!graph.hasSignal(path)) {
+        SLANG_THROW(
+            std::runtime_error(fmt::format("could not find signal: {}", path)));
       }
-      auto fanIn = graph.getCombFanIn(*node);
-      auto header = Utilities::Row{"Name", "Location"};
+      auto queryRange = range.value_or(
+          DriverBitRange{0, std::numeric_limits<int32_t>::max()});
+      auto fanIn =
+          graph.getSignalCombFanIn(path, queryRange, maxDepth.value_or(64));
+      if (outputFormat == Format::Json && maxDepth.value_or(64) != 0) {
+        queryTotal = graph.getSignalCombFanIn(path, queryRange).size();
+      }
+      if (outputFormat == Format::Json) {
+        if (!scopeFilters.empty() || !nameFilters.empty()) {
+          std::erase_if(fanIn, [&](auto *node) {
+            auto nodePath = node->getHierarchicalPath();
+            return nodePath && !passesFilters(*nodePath);
+          });
+        }
+        auto total = queryTotal;
+        queryTotal.reset();
+        return emitNodeGraph(
+            "fan-in",
+            {{"signal", *fanInName}, {"max_depth", maxDepth.value_or(64)}},
+            fanIn, total);
+      }
+      auto header = Utilities::Row{"ID", "Kind", "Name", "Bounds", "Location"};
       auto table = Utilities::Table{};
       for (auto const *n : fanIn) {
         auto path = n->getHierarchicalPath();
         if (path.has_value() && passesFilters(*path)) {
           auto loc = n->getLocation();
-          table.push_back(Utilities::Row{std::string(*path),
-                                         loc ? loc->toString(graph.fileTable)
-                                             : std::string()});
+          table.push_back(Utilities::Row{
+              std::to_string(n->ID), std::string(toString(n->kind)),
+              std::string(*path),
+              n->getBounds() ? toString(*n->getBounds()) : std::string(),
+              loc ? loc->toString(graph.fileTable) : std::string()});
         }
       }
-      emitTable(header, table);
+      emitTable("fan-in", header, table);
       printStats();
-      return 0;
+      return outputFormat == Format::Json ? machineExitCode : 0;
     }
 
     // Report the clocks/resets gating a named node. A single hierarchical
@@ -952,6 +1285,27 @@ auto main(int argc, char **argv) -> int {
           }
         }
       }
+      if (outputFormat == Format::Json) {
+        Json items = Json::array();
+        auto limit = maxResults.value_or(200);
+        auto count = limit == 0 ? sensitivity.size()
+                                : std::min(sensitivity.size(), size_t(limit));
+        for (size_t i = 0; i < count; ++i) {
+          items.push_back(
+              {{"node", nodeJson(*sensitivity[i].source)},
+               {"name",
+                sensitivity[i].source->getHierarchicalPath()
+                    ? Json(*sensitivity[i].source->getHierarchicalPath())
+                    : Json(nullptr)},
+               {"edge", ast::toString(sensitivity[i].edgeKind)},
+               {"role", "event"}});
+        }
+        setEnvelope("sensitivity", {{"signal", *sensitivityName}},
+                    {{"items", std::move(items)}}, count, sensitivity.size(),
+                    count == sensitivity.size());
+        printStats();
+        return count == sensitivity.size() ? (count == 0 ? 3 : 0) : 4;
+      }
       auto header = Utilities::Row{"Name", "Edge", "Location"};
       auto table = Utilities::Table{};
       for (auto const &src : sensitivity) {
@@ -965,9 +1319,9 @@ auto main(int argc, char **argv) -> int {
                                        loc ? loc->toString(graph.fileTable)
                                            : std::string()});
       }
-      emitTable(header, table);
+      emitTable("sensitivity", header, table);
       printStats();
-      return 0;
+      return outputFormat == Format::Json ? machineExitCode : 0;
     }
 
     // Report the constant values driving a named node.
@@ -978,6 +1332,10 @@ auto main(int argc, char **argv) -> int {
             fmt::format("could not find node: {}", *constantDriversName)));
       }
       auto constants = graph.getConstantDrivers(*node);
+      if (outputFormat == Format::Json) {
+        return emitNodeGraph("constant-drivers",
+                             {{"signal", *constantDriversName}}, constants);
+      }
       auto header = Utilities::Row{"Value", "Location"};
       auto table = Utilities::Table{};
       for (auto const *n : constants) {
@@ -987,45 +1345,91 @@ auto main(int argc, char **argv) -> int {
                                        loc ? loc->toString(graph.fileTable)
                                            : std::string()});
       }
-      emitTable(header, table);
+      emitTable("constant-drivers", header, table);
       printStats();
-      return 0;
+      return outputFormat == Format::Json ? machineExitCode : 0;
     }
 
     // Report, per bit, the nodes driving a named signal.
     if (driversName.has_value()) {
       auto [path, range] = parseNameAndRange(*driversName);
-      if (graph.lookup(path) == nullptr) {
+      if (!graph.hasSignal(path)) {
         SLANG_THROW(
-            std::runtime_error(fmt::format("could not find node: {}", path)));
+            std::runtime_error(fmt::format("could not find signal: {}", path)));
       }
       // Without an explicit bit range, report the whole signal.
       auto drivers =
           range ? graph.getBitDrivers(path, *range) : graph.getBitDrivers(path);
-      auto header = Utilities::Row{"Bits", "Driver", "Location"};
+      if (outputFormat == Format::Json) {
+        auto limit = maxResults.value_or(200);
+        auto count = limit == 0 ? drivers.size()
+                                : std::min(drivers.size(), size_t(limit));
+        Json items = Json::array();
+        for (size_t i = 0; i < count; ++i) {
+          auto const &driver = drivers[i];
+          items.push_back({{"bits", toString(driver.bounds)},
+                           {"bounds", Json::array({driver.bounds.lower(),
+                                                   driver.bounds.upper()})},
+                           {"driver", nodeJson(*driver.driver)}});
+        }
+        setEnvelope("drivers", {{"signal", path}},
+                    {{"items", std::move(items)}}, count, drivers.size(),
+                    count == drivers.size());
+        printStats();
+        return count == drivers.size() ? (count == 0 ? 3 : 0) : 4;
+      }
+      auto header = Utilities::Row{"Bits", "Driver ID", "Driver Kind", "Driver",
+                                   "Location"};
       auto table = Utilities::Table{};
       for (auto const &bd : drivers) {
         auto loc = bd.driver->getLocation();
         table.push_back(Utilities::Row{
-            toString(bd.bounds), describeDriver(*bd.driver),
+            toString(bd.bounds), std::to_string(bd.driver->ID),
+            std::string(toString(bd.driver->kind)), describeDriver(*bd.driver),
             loc ? loc->toString(graph.fileTable) : std::string()});
       }
-      emitTable(header, table);
+      emitTable("drivers", header, table);
       printStats();
-      return 0;
+      return outputFormat == Format::Json ? machineExitCode : 0;
     }
 
     // Find a point-to-point path in the netlist.
     if (fromPointName.has_value() && toPointName.has_value()) {
-      auto *fromPoint = graph.lookup(*fromPointName);
-      if (fromPoint == nullptr) {
-        SLANG_THROW(std::runtime_error(
-            fmt::format("could not find start point: {}", *fromPointName)));
-      }
-      auto *toPoint = graph.lookup(*toPointName);
-      if (toPoint == nullptr) {
-        SLANG_THROW(std::runtime_error(
-            fmt::format("could not find finish point: {}", *toPointName)));
+      std::vector<NetlistNode *> fromPoints;
+      std::vector<NetlistNode *> toPoints;
+      auto signalEndpoints = outputFormat == Format::Json && !fromNodeId &&
+                             !toNodeId && !fromKind && !toKind;
+      if (signalEndpoints) {
+        auto [fromSignal, fromRange] = parseNameAndRange(*fromPointName);
+        auto [toSignal, toRange] = parseNameAndRange(*toPointName);
+        auto sourceRange = fromRange.value_or(
+            DriverBitRange{0, std::numeric_limits<int32_t>::max()});
+        auto targetRange = toRange.value_or(
+            DriverBitRange{0, std::numeric_limits<int32_t>::max()});
+        std::unordered_set<NetlistNode *> seen;
+        for (auto const &node : graph) {
+          for (auto const &edge : node->getOutEdges()) {
+            if (!edge->disabled && edge->symbol != nullptr &&
+                edge->symbol->hierarchicalPath == fromSignal &&
+                edge->bounds.overlaps(sourceRange) &&
+                seen.insert(&edge->getTargetNode()).second) {
+              fromPoints.push_back(&edge->getTargetNode());
+            }
+          }
+        }
+        seen.clear();
+        for (auto const &driver : graph.getBitDrivers(toSignal, targetRange)) {
+          if (seen.insert(driver.driver).second)
+            toPoints.push_back(driver.driver);
+        }
+        if (fromPoints.empty() || toPoints.empty()) {
+          SLANG_THROW(std::runtime_error("could not resolve signal endpoint"));
+        }
+      } else {
+        fromPoints.push_back(
+            resolvePathNode(*fromPointName, fromNodeId, fromKind, "from"));
+        toPoints.push_back(
+            resolvePathNode(*toPointName, toNodeId, toKind, "to"));
       }
 
       DEBUG_PRINT("Searching for path between: {} and {}\n", *fromPointName,
@@ -1033,9 +1437,49 @@ auto main(int argc, char **argv) -> int {
 
       // Search for the path.
       PathFinder pathFinder;
-      auto path = pathFinder.find(*fromPoint, *toPoint);
+      NetlistPath path;
+      for (auto *fromPoint : fromPoints) {
+        for (auto *toPoint : toPoints) {
+          path = crossStatePolicy == "never"
+                     ? pathFinder.findComb(*fromPoint, *toPoint)
+                     : pathFinder.find(*fromPoint, *toPoint);
+          if (!path.empty())
+            break;
+        }
+        if (!path.empty())
+          break;
+      }
+
+      if (crossStatePolicy == "once" &&
+          std::ranges::count_if(path, [](auto const *node) {
+            return node->kind == NodeKind::State;
+          }) > 1) {
+        path = {};
+      }
 
       if (!path.empty()) {
+        if (outputFormat == Format::Json) {
+          Json nodes = Json::array();
+          Json edges = Json::array();
+          for (size_t i = 0; i < path.size(); ++i) {
+            nodes.push_back(nodeJson(*path[i]));
+            if (i + 1 < path.size()) {
+              auto edge = path[i]->findEdgeTo(*path[i + 1]);
+              if (edge != path[i]->end())
+                edges.push_back(edgeJson(**edge));
+            }
+          }
+          setEnvelope("path",
+                      {{"from", *fromPointName},
+                       {"to", *toPointName},
+                       {"cross_state", crossStatePolicy}},
+                      {{"nodes", std::move(nodes)},
+                       {"edges", std::move(edges)},
+                       {"boundaries", Json::array()}},
+                      path.size(), path.size());
+          printStats();
+          return 0;
+        }
         auto result = reportPath(graph.fileTable, diagnostics.get(), path);
         OS::print(fmt::format("{}\n", result));
         printStats();
@@ -1043,6 +1487,36 @@ auto main(int argc, char **argv) -> int {
       }
 
       // No path found.
+      if (outputFormat == Format::Json) {
+        Json boundaries = Json::array();
+        if (crossStatePolicy == "never") {
+          for (auto *fromPoint : fromPoints) {
+            for (auto *toPoint : toPoints) {
+              auto structural = pathFinder.find(*fromPoint, *toPoint);
+              for (auto const *node : structural) {
+                if (node->kind == NodeKind::State) {
+                  boundaries.push_back(nodeJson(*node));
+                  break;
+                }
+              }
+              if (!boundaries.empty())
+                break;
+            }
+            if (!boundaries.empty())
+              break;
+          }
+        }
+        setEnvelope("path",
+                    {{"from", *fromPointName},
+                     {"to", *toPointName},
+                     {"cross_state", crossStatePolicy}},
+                    {{"nodes", Json::array()},
+                     {"edges", Json::array()},
+                     {"boundaries", std::move(boundaries)}},
+                    0, 0);
+        printStats();
+        return 3;
+      }
       SLANG_THROW(std::runtime_error(fmt::format(
           "no path between {} and {}", *fromPointName, *toPointName)));
     }
@@ -1051,6 +1525,31 @@ auto main(int argc, char **argv) -> int {
     SLANG_THROW(std::runtime_error("no action specified"));
   }
   SLANG_CATCH(const std::exception &e) {
+    if (outputFormat == Format::Json) {
+      auto message = std::string(e.what());
+      auto ambiguous = message.starts_with("ambiguous ");
+      Json envelope = {
+          {"schema_version", 1},
+          {"tool",
+           {{"name", "slang-netlist"},
+            {"version", SLANG_NETLIST_VERSION},
+            {"graph_schema_version", NetlistSerializer::formatVersion}}},
+          {"command", "error"},
+          {"query", Json::object()},
+          {"data", Json::object()},
+          {"diagnostics",
+           Json::array(
+               {{{"severity", "error"},
+                 {"code", ambiguous ? "ambiguous_endpoint" : "invalid_query"},
+                 {"message", message}}})},
+          {"summary",
+           {{"status", "error"},
+            {"complete", true},
+            {"returned", 0},
+            {"total", 0}}}};
+      writeOutput(envelope.dump(2) + "\n");
+      return ambiguous ? 7 : 6;
+    }
     SLANG_REPORT_EXCEPTION(e, "{}\n");
     return 1;
   }

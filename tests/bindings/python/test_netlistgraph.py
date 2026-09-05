@@ -71,6 +71,18 @@ class TestNetlistGraph(unittest.TestCase):
         node = test.graph.lookup("m.a")
         self.assertIsNotNone(node)
         self.assertEqual(node.name, "a")
+        self.assertEqual(test.graph.lookup_by_id(node.ID).ID, node.ID)
+        self.assertTrue(test.graph.lookup_all("m.a"))
+
+    def test_dependency_semantic_enums(self):
+        self.assertEqual(
+            pyslang_netlist.DependencyRole.Index.name,
+            "Index",
+        )
+        self.assertEqual(
+            pyslang_netlist.DependencyPrecision.Signal.name,
+            "Signal",
+        )
 
     def test_find_path(self):
         code = "module m(input logic a, output logic b); assign b = a; endmodule"

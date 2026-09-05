@@ -7,13 +7,64 @@
 #include <algorithm>
 #include <limits>
 #include <memory>
+#include <random>
 #include <regex>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <tuple>
 #include <unordered_set>
 
 using namespace slang::netlist;
+
+auto slang::netlist::toString(DependencyRole role) -> std::string_view {
+  switch (role) {
+  case DependencyRole::Data:
+    return "data";
+  case DependencyRole::Control:
+    return "control";
+  case DependencyRole::Index:
+    return "index";
+  case DependencyRole::Address:
+    return "address";
+  case DependencyRole::Event:
+    return "event";
+  case DependencyRole::Clock:
+    return "clock";
+  case DependencyRole::Reset:
+    return "reset";
+  case DependencyRole::PortConnection:
+    return "port_connection";
+  case DependencyRole::Unknown:
+    return "unknown";
+  }
+  return "unknown";
+}
+
+auto slang::netlist::toString(DependencyPrecision precision)
+    -> std::string_view {
+  switch (precision) {
+  case DependencyPrecision::Exact:
+    return "exact";
+  case DependencyPrecision::Range:
+    return "range";
+  case DependencyPrecision::Signal:
+    return "signal";
+  case DependencyPrecision::Unknown:
+    return "unknown";
+  }
+  return "unknown";
+}
+
+auto NetlistGraph::getArtifactId() const -> std::string const & {
+  if (artifactId.empty()) {
+    std::random_device random;
+    std::ostringstream stream;
+    stream << std::hex << random() << random() << random() << random();
+    artifactId = stream.str();
+  }
+  return artifactId;
+}
 
 void NetlistGraph::build(ast::Compilation &compilation,
                          analysis::AnalysisManager &analysisManager,
@@ -41,7 +92,23 @@ auto NetlistGraph::lookup(std::string_view name) const -> NetlistNode * {
   auto it = nodeIndex.find(std::string(name));
   if (it == nodeIndex.end() || it->second.empty())
     return nullptr;
-  return it->second.front();
+  return it->second[0];
+}
+
+auto NetlistGraph::lookupAll(std::string_view name) const
+    -> std::vector<NetlistNode *> {
+  buildIndex();
+  auto it = nodeIndex.find(std::string(name));
+  return it == nodeIndex.end() ? std::vector<NetlistNode *>{} : it->second;
+}
+
+auto NetlistGraph::lookupById(size_t id) const -> NetlistNode * {
+  for (auto const &node : nodes) {
+    if (node->ID == id) {
+      return node.get();
+    }
+  }
+  return nullptr;
 }
 
 auto NetlistGraph::lookup(std::string_view name, DriverBitRange bounds) const
@@ -118,6 +185,89 @@ auto NetlistGraph::getBitDrivers(std::string_view name) const
   // may be split across several nodes by bit-aligned resolution.
   return getBitDrivers(name,
                        DriverBitRange{0, std::numeric_limits<int32_t>::max()});
+}
+
+auto NetlistGraph::hasSignal(std::string_view name) const -> bool {
+  for (auto const &node : nodes) {
+    for (auto const &edge : node->getOutEdges()) {
+      if (edge->symbol != nullptr && edge->symbol->hierarchicalPath == name) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+auto NetlistGraph::getSignalCombFanIn(std::string_view name,
+                                      DriverBitRange bounds,
+                                      size_t maxDepth) const
+    -> std::vector<NetlistNode *> {
+  std::unordered_set<NetlistNode *> seen;
+  std::vector<NetlistNode *> result;
+  std::vector<std::pair<NetlistNode *, size_t>> work;
+  for (auto const &driver : getBitDrivers(name, bounds)) {
+    if (seen.insert(driver.driver).second) {
+      result.push_back(driver.driver);
+      work.emplace_back(driver.driver, 0);
+    }
+  }
+  for (size_t index = 0; index < work.size(); ++index) {
+    auto [node, depth] = work[index];
+    if ((maxDepth != 0 && depth >= maxDepth) || node->kind == NodeKind::State) {
+      continue;
+    }
+    for (auto const &edge : node->getInEdges()) {
+      if (edge->disabled) {
+        continue;
+      }
+      auto *source = &edge->getSourceNode();
+      if (seen.insert(source).second) {
+        result.push_back(source);
+        work.emplace_back(source, depth + 1);
+      }
+    }
+  }
+  return result;
+}
+
+auto NetlistGraph::getSignalCombFanOut(std::string_view name,
+                                       DriverBitRange bounds,
+                                       size_t maxDepth) const
+    -> std::vector<NetlistNode *> {
+  std::unordered_set<NetlistNode *> seen;
+  std::vector<NetlistNode *> result;
+  std::vector<std::pair<NetlistNode *, size_t>> work;
+  for (auto const &node : nodes) {
+    for (auto const &edge : node->getOutEdges()) {
+      if (edge->disabled || edge->symbol == nullptr ||
+          edge->symbol->hierarchicalPath != name ||
+          !edge->bounds.overlaps(bounds)) {
+        continue;
+      }
+      auto *consumer = &edge->getTargetNode();
+      if (seen.insert(consumer).second) {
+        result.push_back(consumer);
+        work.emplace_back(consumer, 0);
+      }
+    }
+  }
+  for (size_t index = 0; index < work.size(); ++index) {
+    auto [node, depth] = work[index];
+    if (maxDepth != 0 && depth >= maxDepth) {
+      continue;
+    }
+    for (auto const &edge : node->getOutEdges()) {
+      if (edge->disabled || edge->getTargetNode().kind == NodeKind::State) {
+        continue;
+      }
+      auto *target = &edge->getTargetNode();
+      if (seen.insert(target).second) {
+        result.push_back(target);
+        work.emplace_back(target, depth + 1);
+      }
+    }
+  }
+  return result;
 }
 
 namespace {
