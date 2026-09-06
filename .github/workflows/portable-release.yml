@@ -23,7 +23,7 @@ jobs:
                 -DENABLE_PY_BINDINGS=OFF -DPYBIND11_NOPYTHON=ON \
                 -DCMAKE_CXX_FLAGS="-static-libstdc++ -static-libgcc" \
                 -DCMAKE_INSTALL_PREFIX=/work/dist/root &&
-              /opt/python/cp312-cp312/bin/cmake --build build/portable --parallel 2 &&
+              /opt/python/cp312-cp312/bin/cmake --build build/portable --parallel &&
               /opt/python/cp312-cp312/bin/cmake --install build/portable
             '
 
